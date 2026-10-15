@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Partitura → MIDI</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg">
+<meta name="theme-color" content="#1e293b">
+<style>
+body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;margin:0;padding:24px;max-width:520px;margin:auto}
+h1{font-size:1.4rem}label.f{display:block;border:2px dashed #475569;border-radius:12px;padding:28px;text-align:center;cursor:pointer}
+button{background:#3b82f6;color:#fff;border:0;border-radius:8px;padding:10px 16px;font-size:1rem;margin:8px 8px 0 0}
+button:disabled{opacity:.4}input[type=number]{width:70px;padding:8px;border-radius:6px;border:1px solid #475569;background:#1e293b;color:#fff}
+#st{margin-top:14px;color:#94a3b8}small{color:#64748b;display:block;margin-top:20px;line-height:1.4}
+</style></head><body>
+<h1>🎼 Partitura → MIDI</h1>
+<label class="f">Toque para escolher PDF, imagem, MusicXML ou MXL
+<input id="f" type="file" hidden accept=".pdf,.png,.jpg,.jpeg,.xml,.musicxml,.mxl,image/*"></label>
+<p>Andamento (BPM): <input id="tp" type="number" value="100" min="30" max="300"></p>
+<button id="go" disabled>▶ Tocar</button><button id="sp">■ Parar</button><button id="dl" disabled>⬇ Baixar .mid</button>
+<div id="st">Nenhum arquivo carregado.</div>
+<small>MusicXML/MXL: leitura completa (alturas, ritmos, várias vozes). PDF/imagem: leitor básico no navegador (só claves de sol, notas pretas, todas tocadas como semínimas). Para partituras complexas, converta antes com o Audiveris e importe o MusicXML.</small>
+<script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+const $=id=>document.getElementById(id),W='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+let notes=[],ctx,osc=[];const msg=t=>$('st').textContent=t;
+$('f').onchange=async e=>{const f=e.target.files[0];if(!f)return;msg('Lendo…');
+ try{const n=f.name.toLowerCase();
+  if(/\.(xml|musicxml)$/.test(n))notes=parseXML(await f.text());
+  else if(n.endsWith('.mxl'))notes=parseXML(unmxl(new Uint8Array(await f.arrayBuffer())));
+  else notes=await omr(f);
+  msg(notes.length?notes.length+' notas encontradas.':'Nenhuma nota encontrada.');
+ }catch(x){notes=[];msg('Erro: '+x.message)}
+ $('go').disabled=$('dl').disabled=!notes.length};
+function unmxl(b){const z=fflate.unzipSync(b),d=new TextDecoder();
+ const c=new DOMParser().parseFromString(d.decode(z['META-INF/container.xml']),'text/xml');
+ return d.decode(z[c.querySelector('rootfile').getAttribute('full-path')])}
+function parseXML(t){const d=new DOMParser().parseFromString(t,'text/xml'),out=[],S={C:0,D:2,E:4,F:5,G:7,A:9,B:11};
+ const q=d.querySelector('sound[tempo]');if(q)$('tp').value=Math.round(+q.getAttribute('tempo'));
+ d.querySelectorAll('part').forEach((p,ti)=>{let div=1,t0=0,last=0;
+  p.querySelectorAll('measure').forEach(m=>[...m.children].forEach(e=>{
+   const g=n=>e.querySelector(n)?.textContent;
+   if(e.tagName=='attributes'){const v=e.querySelector('divisions');if(v)div=+v.textContent}
+   else if(e.tagName=='backup')t0-=+g('duration')/div;
+   else if(e.tagName=='forward')t0+=+g('duration')/div;
+   else if(e.tagName=='note'){const dur=+(g('duration')||0)/div,ch=e.querySelector('chord'),s0=ch?last:t0;
+    if(dur>0&&e.querySelector('pitch'))out.push({midi:12*(+g('octave')+1)+S[g('step')]+(+(g('alter')||0)),t:s0,d:dur,tr:ti});
+    if(!ch){last=t0;t0+=dur}}}))});
+ return out}
+async function omr(f){const out=[];let off=0;
+ const draw=async(cv,fn)=>{await fn();const r=detect(cv);r.forEach(n=>{n.t+=off;out.push(n)});off+=r.length};
+ const cv=document.createElement('canvas');
+ if(f.name.toLowerCase().endsWith('.pdf')){pdfjsLib.GlobalWorkerOptions.workerSrc=W;
+  const pdf=await pdfjsLib.getDocument({data:await f.arrayBuffer()}).promise;
+  for(let i=1;i<=pdf.numPages;i++){msg('Página '+i+'/'+pdf.numPages+'…');const pg=await pdf.getPage(i),vp=pg.getViewport({scale:2.5});
+   await draw(cv,async()=>{cv.width=vp.width;cv.height=vp.height;await pg.render({canvasContext:cv.getContext('2d'),viewport:vp}).promise})}}
+ else{const im=await createImageBitmap(f);await draw(cv,async()=>{cv.width=im.width;cv.height=im.height;cv.getContext('2d').drawImage(im,0,0)})}
+ return out}
+function detect(cv){const w=cv.width,h=cv.height,c=cv.getContext('2d').getImageData(0,0,w,h).data,b=new Uint8Array(w*h);
+ for(let i=0;i<w*h;i++)b[i]=(c[4*i]+c[4*i+1]+c[4*i+2])/3<140?1:0;
+ const L=[];for(let y=0;y<h;y++){let n=0;for(let x=0;x<w;x++)n+=b[y*w+x];
+  if(n>w*.4){const l=L[L.length-1];if(l&&y-l.e<=1)l.e=y;else L.push({s:y,e:y})}}
+ if(L.length<5)return[];
+ const ly=L.map(l=>(l.s+l.e)/2),gp=ly.slice(1).map((v,i)=>v-ly[i]),sp=[...gp].sort((a,b)=>a-b)[gp.length>>1],tops=[];
+ for(let i=0;i+4<ly.length;){let ok=1;for(let k=1;k<5;k++)if(Math.abs(ly[i+k]-ly[i+k-1]-sp)>sp*.3)ok=0;if(ok){tops.push(ly[i]);i+=5}else i++}
+ L.forEach(l=>{for(let x=0;x<w;x++)if(!b[(l.s-1)*w+x]&&!b[(l.e+1)*w+x])for(let y=l.s;y<=l.e;y++)b[y*w+x]=0});
+ const m=new Uint8Array(w*h),mn=Math.max(2,sp*.6);
+ for(let y=0;y<h;y++){let x=0;while(x<w){if(!b[y*w+x]){x++;continue}let s=x;while(x<w&&b[y*w+x])x++;if(x-s>=mn)m.fill(1,y*w+s,y*w+x)}}
+ const res=[],st=[];
+ for(let i=0;i<m.length;i++)if(m[i]){let x0=w,x1=0,y0=h,y1=0,a=0;st.push(i);m[i]=0;
+  while(st.length){const p=st.pop(),x=p%w,y=(p-x)/w;a++;if(x<x0)x0=x;if(x>x1)x1=x;if(y<y0)y0=y;if(y>y1)y1=y;
+   for(const q of[p-1,p+1,p-w,p+w])if(q>=0&&q<m.length&&m[q]){m[q]=0;st.push(q)}}
+  const bw=x1-x0+1,bh=y1-y0+1;
+  if(bw>.7*sp&&bw<1.7*sp&&bh>.6*sp&&bh<1.5*sp&&a>.5*bw*bh){
+   const cy=(y0+y1)/2,si=tops.findIndex(t=>cy>t-2.5*sp&&cy<t+6.5*sp);
+   if(si>=0){const ix=38-Math.round((cy-tops[si])/(sp/2));
+    res.push({si,x:(x0+x1)/2,midi:12*(Math.floor(ix/7)+1)+[0,2,4,5,7,9,11][((ix%7)+7)%7]})}}}
+ res.sort((a,b)=>a.si-b.si||a.x-b.x);
+ return res.map((n,i)=>({midi:n.midi,t:i,d:1,tr:0}))}
+$('go').onclick=()=>{stop();ctx=ctx||new AudioContext();const sec=60/$('tp').value,t0=ctx.currentTime+.1;
+ notes.forEach(n=>{const o=ctx.createOscillator(),g=ctx.createGain(),a=t0+n.t*sec,e=a+n.d*sec;
+  o.type='triangle';o.frequency.value=440*2**((n.midi-69)/12);
+  g.gain.setValueAtTime(0,a);g.gain.linearRampToValueAtTime(.15,a+.02);g.gain.exponentialRampToValueAtTime(.001,e);
+  o.connect(g).connect(ctx.destination);o.start(a);o.stop(e+.05);osc.push(o)})};
+function stop(){osc.forEach(o=>{try{o.stop()}catch{}});osc=[]}$('sp').onclick=stop;
+function midi(){const T=480,tr={};notes.forEach(n=>(tr[n.tr]??=[]).push(n));
+ const vl=v=>{const r=[v&127];while(v>>=7)r.unshift((v&127)|128);return r},u32=v=>[v>>>24,v>>16&255,v>>8&255,v&255],u16=v=>[v>>8,v&255];
+ const trks=Object.values(tr).map((ns,i)=>{const ev=[];
+  ns.forEach(n=>{ev.push([Math.round(n.t*T),1,n.midi],[Math.round((n.t+n.d)*T),0,n.midi])});
+  ev.sort((a,b)=>a[0]-b[0]||a[1]-b[1]);
+  const us=Math.round(6e7/$('tp').value),d=i?[]:[0,255,81,3,us>>16&255,us>>8&255,us&255];let p=0;
+  ev.forEach(([t,on,k])=>{d.push(...vl(t-p),on?0x90:0x80,k,on?80:0);p=t});
+  d.push(0,255,47,0);return[77,84,114,107,...u32(d.length),...d]});
+ return new Uint8Array([77,84,104,100,...u32(6),...u16(1),...u16(trks.length),...u16(T),...trks.flat()])}
+$('dl').onclick=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([midi()],{type:'audio/midi'}));a.download='partitura.mid';a.click()};
+if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js');
+</script></body></html>
